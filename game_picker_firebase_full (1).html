@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Game Picker – Shared Wheel (Firebase)</title>
+  <style>
+    :root{ --bg:#070708; --panel:#0b0c0e; --muted:#9aa0a6; --fg:#e6eef8; }
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;font-family:Inter,Segoe UI,Roboto,system-ui,-apple-system,Arial;color:var(--fg);background:var(--bg)}
+    .wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:28px}
+    .card{width:100%;max-width:880px;border-radius:14px;padding:18px;background:linear-gradient(180deg, rgba(255,255,255,0.012), rgba(255,255,255,0.006));box-shadow:0 18px 60px rgba(0,0,0,0.7);border:1px solid rgba(255,255,255,0.03)}
+    .col{display:flex;flex-direction:column;align-items:center;gap:12px}
+    .wheel-outer{position:relative;width:560px;max-width:92vw}
+    canvas#wheel{width:100%;height:auto;border-radius:12px;display:block;position:relative;z-index:2}
+    .glow-ambient{position:absolute;inset:0;border-radius:12px;z-index:1;filter:blur(60px) saturate(120%);transition:background 240ms linear;opacity:0.9}
+    .pointer-fixed{position:absolute;top:-12px;left:50%;transform:translateX(-50%);width:0;height:0;border-left:18px solid transparent;border-right:18px solid transparent;border-top:22px solid #b8babd;z-index:5;filter:drop-shadow(0 2px 0 rgba(0,0,0,0.35))}
+    .controls{display:flex;gap:10px;align-items:center;margin-top:6px;flex-wrap:wrap;justify-content:center}
+    select,button{background:var(--panel);border:1px solid rgba(255,255,255,0.06);color:var(--fg);padding:10px 14px;border-radius:10px;font-weight:700;cursor:pointer}
+    button:active{transform:translateY(1px)}
+    .announcement{margin-top:6px;padding:10px 12px;border-radius:10px;background:linear-gradient(90deg, rgba(255,255,255,0.02), rgba(255,255,255,0.005));width:100%;text-align:center;font-weight:800;letter-spacing:.2px}
+    .edit-wrap{width:100%;margin-top:12px}
+    .edit-toggle{background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--muted)}
+    .edit-card{margin-top:10px;padding:12px;border-radius:10px;background:linear-gradient(180deg, rgba(255,255,255,0.015), rgba(255,255,255,0.004));border:1px solid rgba(255,255,255,0.05)}
+    textarea#editBox{width:100%;min-height:180px;background:transparent;border:1px dashed rgba(255,255,255,0.08);padding:10px;border-radius:8px;color:var(--fg);font-family:ui-monospace, SFMono-Regular, Menlo, monospace}
+    footer{margin-top:10px;text-align:center;color:var(--muted);font-size:13px}
+    .status{font-size:12px;color:var(--muted)}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card col">
+      <div class="wheel-outer">
+        <div class="glow-ambient" id="glow"></div>
+        <div class="pointer-fixed"></div>
+        <canvas id="wheel" width="960" height="960" aria-label="Game picker wheel"></canvas>
+      </div>
+      <div class="controls">
+        <select id="wheelSelect" aria-label="Wheel Category"></select>
+        <button id="spinBtn">Spin</button>
+        <button id="addRandom">Add Random</button>
+        <button id="toggleEdit" class="edit-toggle">Edit Lists</button>
+      </div>
+      <div class="announcement" id="announcement">Loading shared lists…</div>
+      <div class="status" id="status"></div>
+      <div class="edit-wrap" id="editWrap" style="display:none">
+        <div class="edit-card">
+          <p style="margin:0 0 8px 0;color:var(--muted)">
+            Use headers like <code>[shooter]</code>. One game per line. Click <strong>Update Lists</strong> to save to Firebase for everyone.
+          </p>
+          <textarea id="editBox"></textarea>
+          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+            <button id="updateLists">Update Lists</button>
+            <button id="resetLists">Reset to Defaults</button>
+            <button id="clearSaved">Clear Cloud Lists</button>
+          </div>
+        </div>
+      </div>
+      <footer>Share this file’s hosted link in Discord. Everyone with the link can edit. Data is synced via Firebase.</footer>
+    </div>
+  </div>
+
+  <!-- Firebase v9 compat (inline-friendly) -->
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
+
+<script>
+(function(){
+  // Your Firebase config
+  var firebaseConfig = {
+    apiKey: "AIzaSyBw7XNqquT5IjK5DDsrXvMmbXO-oBqcLBk",
+    authDomain: "game-wheel-20e33.firebaseapp.com",
+    projectId: "game-wheel-20e33",
+    storageBucket: "game-wheel-20e33.firebasestorage.app",
+    messagingSenderId: "468365902229",
+    appId: "1:468365902229:web:5b41a61b114a895f5d369c"
+  };
+  firebase.initializeApp(firebaseConfig);
+  var db = firebase.firestore();
+
+  // Shared document: wheels/game-picker
+  var docRef = db.collection('wheels').doc('game-picker');
+
+  // Defaults and state
+  var DEFAULT_LISTS = {
+    all: ["Borderlands 3","Destiny 2","Stardew Valley","First Descendant","Pax Dei","Phasmophobia","Repo","Minecraft","Ark","Payday 2","World War Z"],
+    shooter: ["Borderlands 3","Destiny 2","First Descendant","World War Z","Payday 2"],
+    survival: ["Ark","Minecraft"],
+    cozy: ["Stardew Valley"],
+    horror: ["Phasmophobia","Repo"],
+    mmo: ["Pax Dei"]
+  };
+  var lists = JSON.parse(JSON.stringify(DEFAULT_LISTS));
+
+  var canvas = document.getElementById('wheel');
+  var ctx = canvas.getContext('2d');
+  var glowEl = document.getElementById('glow');
+  var wheelSelect = document.getElementById('wheelSelect');
+  var spinBtn = document.getElementById('spinBtn');
+  var addRandomBtn = document.getElementById('addRandom');
+  var announcement = document.getElementById('announcement');
+  var statusEl = document.getElementById('status');
+  var editWrap = document.getElementById('editWrap');
+  var toggleEdit = document.getElementById('toggleEdit');
+  var editBox = document.getElementById('editBox');
+  var updateListsBtn = document.getElementById('updateLists');
+  var resetListsBtn = document.getElementById('resetLists');
+  var clearSavedBtn = document.getElementById('clearSaved');
+
+  var tints = ['#00b7c2','#7b4fff','#ff9b4a','#3fa9ff','#ff5f87','#ffd95b','#7cffc4','#ff4a6b'];
+  var greys = ['#bdbfc3','#aeb3b8','#989ca0','#85888b'];
+
+  var dpr = window.devicePixelRatio || 1;
+  var cx=0, cy=0, R=0;
+  var sectors = [];
+  var rotation = 0;
+  var spinning = false;
+  var idleSpeed = 0.0009;
+  var suppressNextSnapshot = false;
+
+  function setStatus(txt){ statusEl.textContent = txt || ''; }
+
+  function resize(){
+    canvas.width = 960 * dpr;
+    canvas.height = 960 * dpr;
+    canvas.style.width = '560px';
+    canvas.style.height = '560px';
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    cx = (canvas.width/dpr)/2;
+    cy = (canvas.height/dpr)/2;
+    R  = Math.min(cx,cy) - 44;
+    draw();
+  }
+  function buildSectors(items){
+    sectors = items.map(function(label, i){ return { label: label, color: tints[i % tints.length] }; });
+  }
+  function draw(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    var n = sectors.length; if(!n) return;
+    var angle = (Math.PI*2)/n;
+    var pointerAngle = (-Math.PI/2 - rotation + 2*Math.PI) % (2*Math.PI);
+    var activeIndex = Math.floor(pointerAngle / angle) % n;
+    var activeColor = sectors[activeIndex] ? sectors[activeIndex].color : tints[0];
+    glowEl.style.background = 'radial-gradient(circle at 50% 44%, ' + activeColor + '33 0%, transparent 56%)';
+    for(var i=0;i<n;i++){
+      var start = rotation + i*angle;
+      var end   = start + angle;
+      var mid   = (start+end)/2;
+      var g = ctx.createLinearGradient(
+        cx + Math.cos(mid)*-R*0.62, cy + Math.sin(mid)*-R*0.62,
+        cx + Math.cos(mid)* R*0.62, cy + Math.sin(mid)* R*0.62
+      );
+      g.addColorStop(0, greys[i % greys.length]);
+      g.addColorStop(1, sectors[i].color);
+      ctx.beginPath(); ctx.moveTo(cx,cy); ctx.arc(cx,cy,R,start,end,false); ctx.closePath();
+      ctx.fillStyle = g; ctx.fill();
+      ctx.save(); ctx.translate(cx,cy); ctx.rotate(start + angle/2); ctx.textAlign = 'right'; ctx.font = '700 21px Inter, system-ui, Arial';
+      ctx.lineWidth = 3.2; ctx.strokeStyle = 'rgba(0,0,0,0.72)'; ctx.strokeText(sectors[i].label, R - 36, 6);
+      ctx.fillStyle = '#f8fbff'; ctx.fillText(sectors[i].label, R - 36, 6); ctx.restore();
+    }
+    // hub
+    ctx.save();
+    var hubG = ctx.createRadialGradient(cx-10,cy-10,6, cx,cy, R*0.38);
+    hubG.addColorStop(0,'rgba(255,255,255,0.06)'); hubG.addColorStop(1,'rgba(0,0,0,0.22)');
+    ctx.beginPath(); ctx.arc(cx,cy, R*0.22, 0, Math.PI*2); ctx.fillStyle = hubG; ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.04)'; ctx.stroke(); ctx.restore();
+  }
+  function startSpin(){
+    if(spinning || !sectors.length) return;
+    spinning = true;
+    var n = sectors.length;
+    var anglePer = (2*Math.PI)/n;
+    var rounds = 6 + Math.random()*3;
+    var duration = 5200 + Math.random()*1800;
+    var targetIndex = Math.floor(Math.random()*n);
+    var targetAngle = (-Math.PI/2) - (targetIndex*anglePer) - anglePer/2;
+    var delta = (targetAngle - rotation) % (2*Math.PI);
+    var totalRotation = rounds*2*Math.PI + delta;
+    var startRot = rotation;
+    var t0 = performance.now();
+    function anim(now){
+      var t = Math.min(1, (now - t0)/duration);
+      var eased = 1 - Math.pow(1 - t, 3);
+      rotation = startRot + totalRotation * eased;
+      draw();
+      if(t < 1){ requestAnimationFrame(anim); }
+      else {
+        spinning = false;
+        var finalRot = rotation % (2*Math.PI);
+        var normalized = (-Math.PI/2 - finalRot + 2*Math.PI) % (2*Math.PI);
+        var idx = Math.floor(normalized / anglePer); idx = (idx + n) % n;
+        setAnnouncement('You are playing: ', sectors[idx].label, sectors[idx].color);
+        spawnConfetti();
+      }
+    }
+    requestAnimationFrame(anim);
+  }
+  function setAnnouncement(prefix, name, color){
+    announcement.innerHTML = prefix + '<span style="color:' + color + ';font-weight:900">' + name + '</span>';
+  }
+
+  // Confetti
+  var confCanvas = document.createElement('canvas');
+  confCanvas.style.position='fixed'; confCanvas.style.left='0'; confCanvas.style.top='0'; confCanvas.style.pointerEvents='none';
+  document.body.appendChild(confCanvas);
+  var cctx = confCanvas.getContext('2d');
+  var confetti = [], confLoop=false;
+  function resizeConf(){ confCanvas.width = window.innerWidth; confCanvas.height = window.innerHeight; }
+  function spawnConfetti(){
+    for(var i=0;i<56;i++){
+      confetti.push({ x: window.innerWidth/2 + (Math.random()-0.5)*420, y: window.innerHeight/2 + (Math.random()-0.5)*220, vx:(Math.random()-0.5)*9, vy:-(Math.random()*9+4), rot: Math.random()*Math.PI*2, vr:(Math.random()-0.5)*0.18, size: 6+Math.random()*8, life:0, ttl: 80+Math.random()*60, color: tints[Math.floor(Math.random()*tints.length)] });
+    }
+    if(!confLoop){ confLoop=true; requestAnimationFrame(loopConf); }
+  }
+  function loopConf(){
+    cctx.clearRect(0,0,confCanvas.width,confCanvas.height);
+    for(var i=confetti.length-1;i>=0;i--){
+      var p=confetti[i]; p.life++; p.vy+=0.25; p.x+=p.vx; p.y+=p.vy; p.rot+=p.vr;
+      cctx.save(); cctx.translate(p.x,p.y); cctx.rotate(p.rot); cctx.fillStyle=p.color; cctx.fillRect(-p.size/2,-p.size/2,p.size,p.size*0.6); cctx.restore();
+      if(p.y>confCanvas.height+120 || p.life>p.ttl){ confetti.splice(i,1); }
+    }
+    if(confetti.length>0) requestAnimationFrame(loopConf); else confLoop=false;
+  }
+
+  // Lists UI
+  function populateSelect(){
+    wheelSelect.innerHTML='';
+    var keys = Object.keys(lists);
+    for(var i=0;i<keys.length;i++){
+      var k = keys[i];
+      var opt = document.createElement('option');
+      opt.value = k;
+      opt.textContent = (k==='all') ? 'All Games' : (k.charAt(0).toUpperCase()+k.slice(1));
+      wheelSelect.appendChild(opt);
+    }
+    wheelSelect.value = 'all';
+  }
+  function listsToEditBox(){
+    var txt=''; var keys = Object.keys(lists);
+    for(var i=0;i<keys.length;i++){
+      var k = keys[i];
+      txt += '['+k+']\n' + lists[k].join('\n') + '\n\n';
+    }
+    editBox.value = txt.replace(/\n\n$/,''); // trim final blank line
+  }
+  function parseEditBox(){
+    var lines = editBox.value.split(/\r?\n/);
+    var newLists = {}; var current=null;
+    for(var i=0;i<lines.length;i++){
+      var line = lines[i].replace(/^\s+|\s+$/g,'');
+      if(!line) continue;
+      var h = line.match(/^\[(.+)\]$/);
+      if(h){ current=h[1]; newLists[current]=[]; continue; }
+      if(current){ newLists[current].push(line); }
+    }
+    if(!newLists.all){
+      var union = {}; var ks = Object.keys(newLists);
+      for(i=0;i<ks.length;i++){ var arr=newLists[ks[i]]; for(var j=0;j<arr.length;j++){ union[arr[j]]=true; } }
+      newLists.all = Object.keys(union);
+    }
+    lists = newLists;
+    populateSelect(); buildFromSelection(); listsToEditBox();
+    saveListsCloud();
+  }
+  function resetLists(){
+    lists = JSON.parse(JSON.stringify(DEFAULT_LISTS));
+    populateSelect(); buildFromSelection(); listsToEditBox();
+    saveListsCloud();
+  }
+  function clearSaved(){
+    suppressNextSnapshot = true;
+    docRef.set({ lists: DEFAULT_LISTS, updatedAt: Date.now() }, { merge: false })
+      .then(function(){ setStatus('Cloud lists reset to defaults.'); })
+      .catch(function(e){ setStatus('Error: '+e.message); });
+  }
+  function buildFromSelection(){
+    var key = wheelSelect.value || 'all';
+    var items = (lists[key] || []).slice();
+    buildSectors(items);
+    rotation = 0; draw();
+    announcement.innerHTML = 'Ready — press <strong>Spin</strong>';
+  }
+
+  // Cloud sync
+  function saveListsCloud(){
+    suppressNextSnapshot = true;
+    setStatus('Saving…');
+    docRef.set({ lists: lists, updatedAt: Date.now() }, { merge: true })
+      .then(function(){ setStatus('Saved to cloud.'); setTimeout(function(){ setStatus(''); }, 1200); })
+      .catch(function(e){ setStatus('Save error: '+e.message); });
+  }
+  function applyCloudLists(cloudLists){
+    lists = cloudLists && typeof cloudLists === 'object' ? cloudLists : JSON.parse(JSON.stringify(DEFAULT_LISTS));
+    populateSelect(); buildFromSelection(); listsToEditBox();
+  }
+
+  // Realtime listener
+  docRef.onSnapshot(function(snap){
+    if(!snap.exists){
+      docRef.set({ lists: DEFAULT_LISTS, updatedAt: Date.now() }, { merge: false });
+      return;
+    }
+    if(suppressNextSnapshot){ suppressNextSnapshot = false; return; }
+    var data = snap.data() || {};
+    if(data.lists){ applyCloudLists(data.lists); setStatus('Updated from cloud.'); setTimeout(function(){ setStatus(''); }, 1000); }
+  }, function(err){
+    setStatus('Realtime error: ' + err.message);
+  });
+
+  // Initial fetch as fallback
+  docRef.get().then(function(snap){
+    if(snap.exists){ var data=snap.data()||{}; applyCloudLists(data.lists); announcement.innerHTML='Ready — press <strong>Spin</strong>'; }
+    else { applyCloudLists(DEFAULT_LISTS); announcement.innerHTML='Ready — press <strong>Spin</strong>'; saveListsCloud(); }
+  }).catch(function(e){ setStatus('Load error: '+e.message); applyCloudLists(DEFAULT_LISTS); });
+
+  // Events
+  toggleEdit.addEventListener('click', function(){
+    var shown = (editWrap.style.display==='block');
+    editWrap.style.display = shown ? 'none' : 'block';
+    toggleEdit.textContent = shown ? 'Edit Lists' : 'Close Editor';
+  });
+  updateListsBtn.addEventListener('click', parseEditBox);
+  resetListsBtn.addEventListener('click', resetLists);
+  clearSavedBtn.addEventListener('click', clearSaved);
+  addRandomBtn.addEventListener('click', function(){
+    var sel = wheelSelect.value || 'all';
+    var sample = ['Helldivers 2','Left 4 Dead 2','Valheim','Deep Rock Galactic','Risk of Rain 2'];
+    var pick = sample[Math.floor(Math.random()*sample.length)];
+    if(!lists[sel]) lists[sel]=[];
+    lists[sel].push(pick);
+    if(lists.all.indexOf(pick)===-1) lists.all.push(pick);
+    listsToEditBox(); populateSelect(); buildFromSelection();
+    saveListsCloud();
+  });
+  wheelSelect.addEventListener('change', buildFromSelection);
+  spinBtn.addEventListener('click', startSpin);
+  window.addEventListener('resize', function(){ resize(); resizeConf(); });
+
+  // Idle loop
+  function tick(){ if(!spinning){ rotation += idleSpeed; } draw(); requestAnimationFrame(tick); }
+
+  // Confetti canvas sizing
+  var confCanvas = document.createElement('canvas');
+  confCanvas.style.position='fixed'; confCanvas.style.left='0'; confCanvas.style.top='0'; confCanvas.style.pointerEvents='none';
+  document.body.appendChild(confCanvas);
+  var cctx = confCanvas.getContext('2d');
+  var confetti = [], confLoop=false;
+  function resizeConf(){ confCanvas.width = window.innerWidth; confCanvas.height = window.innerHeight; }
+  function spawnConfetti(){
+    for(var i=0;i<56;i++){
+      confetti.push({ x: window.innerWidth/2 + (Math.random()-0.5)*420, y: window.innerHeight/2 + (Math.random()-0.5)*220, vx:(Math.random()-0.5)*9, vy:-(Math.random()*9+4), rot: Math.random()*Math.PI*2, vr:(Math.random()-0.5)*0.18, size: 6+Math.random()*8, life:0, ttl: 80+Math.random()*60, color: tints[Math.floor(Math.random()*tints.length)] });
+    }
+    if(!confLoop){ confLoop=true; requestAnimationFrame(loopConf); }
+  }
+  function loopConf(){
+    cctx.clearRect(0,0,confCanvas.width,confCanvas.height);
+    for(var i=confetti.length-1;i>=0;i--){
+      var p=confetti[i]; p.life++; p.vy+=0.25; p.x+=p.vx; p.y+=p.vy; p.rot+=p.vr;
+      cctx.save(); cctx.translate(p.x,p.y); cctx.rotate(p.rot); cctx.fillStyle=p.color; cctx.fillRect(-p.size/2,-p.size/2,p.size,p.size*0.6); cctx.restore();
+      if(p.y>confCanvas.height+120 || p.life>p.ttl){ confetti.splice(i,1); }
+    }
+    if(confetti.length>0) requestAnimationFrame(loopConf); else confLoop=false;
+  }
+
+  // Kickoff
+  function init(){ resize(); resizeConf(); populateSelect(); listsToEditBox(); buildFromSelection(); tick(); }
+  if(document.readyState==='complete' || document.readyState==='interactive'){ init(); }
+  else { document.addEventListener('DOMContentLoaded', init, { once:true }); }
+})();
+</script>
+</body>
+</html>
